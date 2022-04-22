@@ -16,12 +16,13 @@ import (
 
 var (
 	crawlerDBPath = flag.String("crawler-db-path", "nodetable", "Crawler Database SQLite Path")
-	apiDBPath = flag.String("api-db-path", "nodes", "API Database SQLite Path")
+	apiDBPath     = flag.String("api-db-path", "nodes", "API Database SQLite Path")
+	dropNodesTime = flag.Duration("drop-time", 24*time.Hour, "Time to drop crawled nodes")
 )
 
 func main() {
 	flag.Parse()
-	
+
 	crawlerDB, err := sql.Open("sqlite3", *crawlerDBPath)
 	if err != nil {
 		panic(err)
@@ -41,18 +42,19 @@ func main() {
 		}
 	}
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	// Start reading deamon
-	go deamon(&wg, crawlerDB, nodeDB)
+	go newNodeDeamon(&wg, crawlerDB, nodeDB)
+	go dropDeamon(&wg, nodeDB)
 	// Start the API deamon
 	apiDeamon := api.New(nodeDB)
 	go apiDeamon.HandleRequests(&wg)
 	wg.Wait()
 }
 
-// Deamon reads new nodes from the crawler and puts them in the db
+// newNodeDeamon reads new nodes from the crawler and puts them in the db
 // Might trigger the invalidation of caches for the api in the future
-func deamon(wg *sync.WaitGroup, crawlerDB, nodeDB *sql.DB) {
+func newNodeDeamon(wg *sync.WaitGroup, crawlerDB, nodeDB *sql.DB) {
 	defer wg.Done()
 	lastCheck := time.Time{}
 	for {
@@ -67,7 +69,21 @@ func deamon(wg *sync.WaitGroup, crawlerDB, nodeDB *sql.DB) {
 			if err != nil {
 				fmt.Printf("Error inserting nodes: %v\n", err)
 			}
+			fmt.Printf("%d nodes inserted\n", len(nodes))
 		}
 		time.Sleep(time.Second)
+	}
+}
+
+func dropDeamon(wg *sync.WaitGroup, db *sql.DB) {
+	defer wg.Done()
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		err := dropOldNodes(db, *dropNodesTime)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
